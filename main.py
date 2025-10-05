@@ -75,10 +75,11 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
 # a geocoding API instead of relying on fragile regex to find coordinates
 # in the URL, which often fails for shared place URLs.
 @app.post("/resolve-gmaps-url")
+@app.post("/resolve-gmaps-url")
 def resolve_gmaps_url(req: UrlRequest):
     """
-    Resolves a Google Maps URL by extracting the place name and using a
-    geocoding API to find its coordinates.
+    Resolves a Google Maps URL by extracting the place name, cleaning it,
+    and then using a geocoding API to find its coordinates.
     """
     try:
         # Step 1: Follow the redirect to get the final URL
@@ -92,38 +93,40 @@ def resolve_gmaps_url(req: UrlRequest):
         print(f"--- DEBUG: Final resolved URL: {final_url}")
 
         # Step 2: Extract the place name from the URL.
-        # It's usually between /place/ and the next /
         match = re.search(r"/place/([^/]+)", final_url)
         if not match:
             # Fallback for URLs that might contain coordinates directly
-            # Pattern 1: For URLs with '@lat,lon'
             coord_match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
             if coord_match:
                 lat, lon = coord_match.groups()
                 return {"latitude": float(lat), "longitude": float(lon)}
 
-            # If no name and no direct coordinates are found, then fail
             raise HTTPException(
                 status_code=400,
                 detail="Could not extract a recognizable place name or coordinates from the URL."
             )
         
-        place_name = match.group(1).replace('+', ' ') # Replace '+' with spaces for the API call
-        print(f"--- DEBUG: Extracted place name: {place_name}")
+        # --- NEW IMPROVEMENT: Sanitize the place name ---
+        raw_place_name = unquote(match.group(1).replace('+', ' '))
+        place_name = raw_place_name.split('|')[0].strip()
+        
+        print(f"--- DEBUG: Raw place name: {raw_place_name}")
+        print(f"--- DEBUG: Cleaned place name for API: {place_name}")
 
-        # Step 3: Use the Open-Meteo Geocoding API to find the coordinates
+        # Step 3: Use the Open-Meteo Geocoding API with the CLEANED name
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={place_name}&count=1&format=json"
         geo_response = requests.get(geo_url, timeout=10)
         geo_response.raise_for_status()
         geo_data = geo_response.json()
 
-        # Step 4: Check if the API returned any results and return the first one
+        # Step 4: Check if the API returned any results
         if "results" in geo_data and len(geo_data["results"]) > 0:
             location = geo_data["results"][0]
+            location_name_for_display = location.get("name", raw_place_name)
             return {
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
-                "found_name": location.get("name", "N/A")
+                "found_name": location_name_for_display
             }
         else:
             raise HTTPException(
@@ -132,10 +135,7 @@ def resolve_gmaps_url(req: UrlRequest):
             )
 
     except requests.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Failed to resolve URL or contact geocoding service: {e}")
-
-
-@app.get("/search-location")
+        raise HTTPException(status_code=503, detail=f"Failed to resolve URL or contact geocoding service: {e}")@app.get("/search-location")
 def search_location(name: str):
     """Proxies a search request to the Open-Meteo geocoding API."""
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={name}&count=5&format=json"
