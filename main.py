@@ -6,6 +6,7 @@ from typing import List
 import requests
 import math
 import re
+from urllib.parse import unquote
 
 # --- App Setup ---
 app = FastAPI()
@@ -74,7 +75,6 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
 # This version is more robust because it extracts the place name and uses
 # a geocoding API instead of relying on fragile regex to find coordinates
 # in the URL, which often fails for shared place URLs.
-@app.post("/resolve-gmaps-url")
 @app.post("/resolve-gmaps-url")
 def resolve_gmaps_url(req: UrlRequest):
     """
