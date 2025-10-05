@@ -78,68 +78,70 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
 # (Keep all your imports, including 'unquote')
 
 # --- REPLACE your /resolve-gmaps-url function with this one ---
+# (Keep all your imports, including 'unquote')
+
+# --- REPLACE your /resolve-gmaps-url function with this one using the Nominatim API ---
 @app.post("/resolve-gmaps-url")
 def resolve_gmaps_url(req: UrlRequest):
     """
-    Resolves a Google Maps URL by finding the general AREA of the place,
-    allowing the user to pinpoint the exact location on the map.
+    Resolves a Google Maps URL using the powerful Nominatim (OpenStreetMap) API,
+    which has a much more comprehensive database of places.
     """
     try:
         # Step 1: Follow redirect
         with requests.Session() as s:
-            s.headers = { 'User-Agent': 'Mozilla/5.0 ...' } # Use your full user agent
+            s.headers = { 'User-Agent': 'Mozilla/5.0 ...' } # Your full User-Agent
             response = s.get(req.url, allow_redirects=True, timeout=10)
             final_url = response.url
 
-        # Step 2: Handle URLs with direct coordinates first (most precise)
+        # Step 2: Handle URLs with direct coordinates first
         coord_match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
         if coord_match:
             lat, lon = coord_match.groups()
             return {
                 "latitude": float(lat), 
                 "longitude": float(lon),
-                "isAreaResult": False # This is a precise point
+                "isAreaResult": False
             }
 
-        # Step 3: Handle named places by extracting the best area name
+        # Step 3: Handle named places
         match = re.search(r"/place/([^/]+)", final_url)
         if not match:
             raise HTTPException(status_code=400, detail="Could not find a place name in the URL.")
 
         raw_place_name = unquote(match.group(1).replace('+', ' '))
-        specific_name = raw_place_name.split('|')[0].strip()
+        # We can use the full, detailed name now because Nominatim is much smarter
+        search_name = raw_place_name.split('|')[0].strip()
+        
+        print(f"--- DEBUG: Searching Nominatim for: '{search_name}'")
 
-        # Try to find a broader context (city, state) in the name
-        context_match = re.search(r',\s*([^,]+(?:,\s*[^,]+)*)$', raw_place_name)
-        if context_match:
-            # Use the broader context for a more reliable search
-            search_name = context_match.group(1).strip()
-        else:
-            # If no context, just use the specific name
-            search_name = specific_name
-
-        print(f"--- DEBUG: Searching for area: {search_name}")
-
-        # Step 4: Call Geocoding API with the area name
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={search_name}&count=1&format=json"
-        geo_response = requests.get(geo_url, timeout=10)
+        # Step 4: Call the Nominatim API
+        # IMPORTANT: We are changing the URL to point to Nominatim
+        geo_url = f"https://nominatim.openstreetmap.org/search?q={search_name}&format=json&limit=1"
+        
+        # We MUST provide a custom User-Agent per Nominatim's policy
+        headers = {
+            'User-Agent': 'WindEnergyEstimator/1.0 (Contact: your-email@example.com)'
+        }
+        
+        geo_response = requests.get(geo_url, headers=headers, timeout=10)
         geo_response.raise_for_status()
         geo_data = geo_response.json()
 
-        if "results" in geo_data and len(geo_data["results"]) > 0:
-            location = geo_data["results"][0]
+        if geo_data: # Nominatim returns a list, so we check if it's not empty
+            location = geo_data[0]
+            # Now we can return a PRECISE result, not just an area
             return {
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "found_name": location.get("name"), # The name of the area found
-                "isAreaResult": True # IMPORTANT: Flag for the frontend
+                "latitude": float(location["lat"]),
+                "longitude": float(location["lon"]),
+                "found_name": location.get("display_name"),
+                "isAreaResult": False # Nominatim is good enough to give us a point
             }
         else:
-            raise HTTPException(status_code=404, detail=f"Could not find the general area for '{search_name}'.")
+            raise HTTPException(status_code=404, detail=f"Nominatim could not find a location for '{search_name}'.")
 
     except requests.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Service connection error: {e}")
-        
+        raise HTTPException(status_code=503, detail=f"Service connection error: {e}")        
 def search_location(name: str):
     """Proxies a search request to the Open-Meteo geocoding API."""
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={name}&count=5&format=json"
