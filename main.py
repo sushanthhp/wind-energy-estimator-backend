@@ -69,39 +69,71 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
     return 0.5 * air_density * swept_area * wind_speed**3
 
 # --- API Endpoints ---
+
+# --- MODIFIED/CORRECTED ENDPOINT ---
+# This version is more robust because it extracts the place name and uses
+# a geocoding API instead of relying on fragile regex to find coordinates
+# in the URL, which often fails for shared place URLs.
 @app.post("/resolve-gmaps-url")
 def resolve_gmaps_url(req: UrlRequest):
-    """Resolves a short Google Maps URL to find and return its coordinates."""
+    """
+    Resolves a Google Maps URL by extracting the place name and using a
+    geocoding API to find its coordinates.
+    """
     try:
-        # Use a session with headers to better mimic a real browser
+        # Step 1: Follow the redirect to get the final URL
         with requests.Session() as s:
             s.headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            response = s.get(req.url, allow_redirects=True, timeout=5)
+            response = s.get(req.url, allow_redirects=True, timeout=10)
             final_url = response.url
         
-        # --- DEBUGGING STEP: Print the final URL to the console ---
-        print("--- DEBUG ---")
-        print(f"Final resolved URL: {final_url}")
-        print("---------------")
+        print(f"--- DEBUG: Final resolved URL: {final_url}")
 
-        # Pattern 1: For URLs with '@lat,lon' (e.g., from a dropped pin)
-        match1 = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
-        if match1:
-            lat, lon = match1.groups()
-            return {"latitude": float(lat), "longitude": float(lon)}
+        # Step 2: Extract the place name from the URL.
+        # It's usually between /place/ and the next /
+        match = re.search(r"/place/([^/]+)", final_url)
+        if not match:
+            # Fallback for URLs that might contain coordinates directly
+            # Pattern 1: For URLs with '@lat,lon'
+            coord_match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
+            if coord_match:
+                lat, lon = coord_match.groups()
+                return {"latitude": float(lat), "longitude": float(lon)}
 
-        # Pattern 2: For URLs with '!3dlat!4dlon' (e.g., for named places)
-        match2 = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", final_url)
-        if match2:
-            lat, lon = match2.groups()
-            return {"latitude": float(lat), "longitude": float(lon)}
+            # If no name and no direct coordinates are found, then fail
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract a recognizable place name or coordinates from the URL."
+            )
         
-        # If neither pattern matches, raise an error
-        raise HTTPException(status_code=400, detail="Could not find coordinates in the final URL.")
+        place_name = match.group(1).replace('+', ' ') # Replace '+' with spaces for the API call
+        print(f"--- DEBUG: Extracted place name: {place_name}")
+
+        # Step 3: Use the Open-Meteo Geocoding API to find the coordinates
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={place_name}&count=1&format=json"
+        geo_response = requests.get(geo_url, timeout=10)
+        geo_response.raise_for_status()
+        geo_data = geo_response.json()
+
+        # Step 4: Check if the API returned any results and return the first one
+        if "results" in geo_data and len(geo_data["results"]) > 0:
+            location = geo_data["results"][0]
+            return {
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
+                "found_name": location.get("name", "N/A")
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Geocoding service could not find coordinates for '{place_name}'."
+            )
+
     except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Failed to resolve URL: {e}")
+        raise HTTPException(status_code=503, detail=f"Failed to resolve URL or contact geocoding service: {e}")
+
 
 @app.get("/search-location")
 def search_location(name: str):
@@ -112,7 +144,7 @@ def search_location(name: str):
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
-        return {"error": str(e)}, 500
+        raise HTTPException(status_code=503, detail=f"Could not connect to the geocoding service: {e}")
     
 @app.post("/estimate")
 def estimate_power(req: WindRequest):
@@ -122,6 +154,7 @@ def estimate_power(req: WindRequest):
     adjusted_speed = adjust_wind_speed_for_height(weather['wind_speed_mps'], req.turbine_height)
     power = calculate_power_output(air_density, adjusted_speed, req.blade_radius)
     return {
+        "location_input": {"latitude": req.latitude, "longitude": req.longitude},
         "weather": weather,
         "air_density_kg_m3": round(air_density, 3),
         "adjusted_wind_speed_mps": round(adjusted_speed, 2),
@@ -138,10 +171,10 @@ def compare_power(req: CompareRequest):
         adjusted_speed = adjust_wind_speed_for_height(weather['wind_speed_mps'], loc.turbine_height)
         power = calculate_power_output(air_density, adjusted_speed, loc.blade_radius)
         results.append({
+            "location_input": {"latitude": loc.latitude, "longitude": loc.longitude},
             "weather": weather,
             "air_density_kg_m3": round(air_density, 3),
             "adjusted_wind_speed_mps": round(adjusted_speed, 2),
             "estimated_power_W": round(power, 2)
         })
     return results
-
