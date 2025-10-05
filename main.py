@@ -80,6 +80,11 @@ def resolve_gmaps_url(req: UrlRequest):
             }
             response = s.get(req.url, allow_redirects=True, timeout=5)
             final_url = response.url
+        
+        # --- DEBUGGING STEP: Print the final URL to the console ---
+        print("--- DEBUG ---")
+        print(f"Final resolved URL: {final_url}")
+        print("---------------")
 
         # Pattern 1: For URLs with '@lat,lon' (e.g., from a dropped pin)
         match1 = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
