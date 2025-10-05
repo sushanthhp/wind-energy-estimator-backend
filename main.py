@@ -73,14 +73,28 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
 def resolve_gmaps_url(req: UrlRequest):
     """Resolves a short Google Maps URL to find and return its coordinates."""
     try:
-        response = requests.get(req.url, allow_redirects=True, timeout=5)
-        final_url = response.url
-        match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
-        if match:
-            lat, lon = match.groups()
+        # Use a session with headers to better mimic a real browser
+        with requests.Session() as s:
+            s.headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = s.get(req.url, allow_redirects=True, timeout=5)
+            final_url = response.url
+
+        # Pattern 1: For URLs with '@lat,lon' (e.g., from a dropped pin)
+        match1 = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
+        if match1:
+            lat, lon = match1.groups()
             return {"latitude": float(lat), "longitude": float(lon)}
-        else:
-            raise HTTPException(status_code=400, detail="Could not find coordinates in the final URL.")
+
+        # Pattern 2: For URLs with '!3dlat!4dlon' (e.g., for named places)
+        match2 = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", final_url)
+        if match2:
+            lat, lon = match2.groups()
+            return {"latitude": float(lat), "longitude": float(lon)}
+        
+        # If neither pattern matches, raise an error
+        raise HTTPException(status_code=400, detail="Could not find coordinates in the final URL.")
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Failed to resolve URL: {e}")
 
@@ -125,3 +139,4 @@ def compare_power(req: CompareRequest):
             "estimated_power_W": round(power, 2)
         })
     return results
+
