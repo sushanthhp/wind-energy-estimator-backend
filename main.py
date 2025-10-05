@@ -75,67 +75,71 @@ def calculate_power_output(air_density: float, wind_speed: float, blade_radius: 
 # This version is more robust because it extracts the place name and uses
 # a geocoding API instead of relying on fragile regex to find coordinates
 # in the URL, which often fails for shared place URLs.
+# (Keep all your imports, including 'unquote')
+
+# --- REPLACE your /resolve-gmaps-url function with this one ---
 @app.post("/resolve-gmaps-url")
 def resolve_gmaps_url(req: UrlRequest):
     """
-    Resolves a Google Maps URL by extracting the place name, cleaning it,
-    and then using a geocoding API to find its coordinates.
+    Resolves a Google Maps URL by finding the general AREA of the place,
+    allowing the user to pinpoint the exact location on the map.
     """
     try:
-        # Step 1: Follow the redirect to get the final URL
+        # Step 1: Follow redirect
         with requests.Session() as s:
-            s.headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+            s.headers = { 'User-Agent': 'Mozilla/5.0 ...' } # Use your full user agent
             response = s.get(req.url, allow_redirects=True, timeout=10)
             final_url = response.url
-        
-        print(f"--- DEBUG: Final resolved URL: {final_url}")
 
-        # Step 2: Extract the place name from the URL.
+        # Step 2: Handle URLs with direct coordinates first (most precise)
+        coord_match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
+        if coord_match:
+            lat, lon = coord_match.groups()
+            return {
+                "latitude": float(lat), 
+                "longitude": float(lon),
+                "isAreaResult": False # This is a precise point
+            }
+
+        # Step 3: Handle named places by extracting the best area name
         match = re.search(r"/place/([^/]+)", final_url)
         if not match:
-            # Fallback for URLs that might contain coordinates directly
-            coord_match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final_url)
-            if coord_match:
-                lat, lon = coord_match.groups()
-                return {"latitude": float(lat), "longitude": float(lon)}
+            raise HTTPException(status_code=400, detail="Could not find a place name in the URL.")
 
-            raise HTTPException(
-                status_code=400,
-                detail="Could not extract a recognizable place name or coordinates from the URL."
-            )
-        
-        # --- NEW IMPROVEMENT: Sanitize the place name ---
         raw_place_name = unquote(match.group(1).replace('+', ' '))
-        place_name = raw_place_name.split('|')[0].strip()
-        
-        print(f"--- DEBUG: Raw place name: {raw_place_name}")
-        print(f"--- DEBUG: Cleaned place name for API: {place_name}")
+        specific_name = raw_place_name.split('|')[0].strip()
 
-        # Step 3: Use the Open-Meteo Geocoding API with the CLEANED name
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={place_name}&count=1&format=json"
+        # Try to find a broader context (city, state) in the name
+        context_match = re.search(r',\s*([^,]+(?:,\s*[^,]+)*)$', raw_place_name)
+        if context_match:
+            # Use the broader context for a more reliable search
+            search_name = context_match.group(1).strip()
+        else:
+            # If no context, just use the specific name
+            search_name = specific_name
+
+        print(f"--- DEBUG: Searching for area: {search_name}")
+
+        # Step 4: Call Geocoding API with the area name
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={search_name}&count=1&format=json"
         geo_response = requests.get(geo_url, timeout=10)
         geo_response.raise_for_status()
         geo_data = geo_response.json()
 
-        # Step 4: Check if the API returned any results
         if "results" in geo_data and len(geo_data["results"]) > 0:
             location = geo_data["results"][0]
-            location_name_for_display = location.get("name", raw_place_name)
             return {
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
-                "found_name": location_name_for_display
+                "found_name": location.get("name"), # The name of the area found
+                "isAreaResult": True # IMPORTANT: Flag for the frontend
             }
         else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Geocoding service could not find coordinates for '{place_name}'."
-            )
+            raise HTTPException(status_code=404, detail=f"Could not find the general area for '{search_name}'.")
 
     except requests.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Failed to resolve URL or contact geocoding service: {e}")@app.get("/search-location")
+        raise HTTPException(status_code=503, detail=f"Service connection error: {e}")
+        
 def search_location(name: str):
     """Proxies a search request to the Open-Meteo geocoding API."""
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={name}&count=5&format=json"
