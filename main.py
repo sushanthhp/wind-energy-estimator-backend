@@ -57,8 +57,25 @@ def adjust_wind_speed_for_height(v_ref: float, h: float, ref_height: float = 10,
     return v_ref * (h / ref_height) ** alpha
 
 def calculate_power_output(air_density: float, wind_speed: float, blade_radius: float) -> float:
+    """
+    Calculates the estimated electrical power output of a wind turbine.
+    This version includes key efficiency factors for a more realistic estimate.
+    """
     swept_area = math.pi * blade_radius**2
-    return 0.5 * air_density * swept_area * wind_speed**3
+    power_in_wind = 0.5 * air_density * swept_area * wind_speed**3
+
+    # --- Efficiency Factors ---
+    # Power coefficient (Cp): Accounts for aerodynamic efficiency (Betz's Law). Cannot exceed ~0.59.
+    power_coefficient_Cp = 0.45
+    # Gearbox efficiency: Accounts for mechanical losses, including gear resistance.
+    gearbox_efficiency = 0.97
+    # Generator efficiency: Accounts for losses in converting mechanical to electrical energy.
+    generator_efficiency = 0.96
+
+    # Calculate the final electrical power by applying all efficiency losses
+    electrical_power_output = power_in_wind * power_coefficient_Cp * gearbox_efficiency * generator_efficiency
+    
+    return electrical_power_output
 
 # --- API Endpoints ---
 
